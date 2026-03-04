@@ -1,0 +1,140 @@
+# Door System（A* Tag 架構）使用與設定說明（給開發者 / AI）
+
+> 本文件專門說明「DoorSystem A* Tag Rewrite」功能。
+> 目標：讓你或新的 AI 對話能快速上手，並避免改壞既有行為。
+
+---
+
+## 1) 功能概念（新架構）
+
+- 舊架構依賴 `OnTriggerEnter2D` 通知敵人停下，容易漏偵測。
+- 新架構改為：
+  - `DoorController` 在門「修好 / 破壞」時，用 A* `GraphUpdateObject` 更新門區域節點 Tag。
+  - `EnemyController.FollowPath()` 每 Tick 讀取 `_cachedGraphNode.Tag`。
+  - 敵人踩到 `DoorNodeTag` 時，自行設定 `_doorGate`，進入攻門邏輯。
+- 核心原則：**敵人自主判斷，不依賴 Physics callback 來綁門**。
+
+---
+
+## 2) 必要場景設定（一次性）
+
+## A. Layer 與 Trigger
+
+- 在 `Project Settings -> Tags and Layers` 新增 Layer：`DoorSensor`。
+- 每扇門的 `_triggerZone` 物件 Layer 設為 `DoorSensor`。
+- `_triggerZone` 的 `Collider2D` 必須勾選 `Is Trigger`。
+- `Physics 2D` 至少要確保 `Player <-> DoorSensor` 可觸發（玩家進入門區修補）。
+
+## B. A* 設定
+
+- 場景必須有 `AstarPath` 元件，且 Graph 已覆蓋門與敵人行走區域。
+- 建議將 A* Tag Name 的 `Tag 1` 命名為 `Door`（僅方便觀察，不影響程式）。
+
+## C. 門物件必要引用
+
+- `DoorController` 的下列欄位不可漏：
+  - `_triggerZone`
+  - `_spriteRenderer`
+  - `_closedSprite`, `_openSprite`, `_destroyedSprite`
+- MMF 插槽可留空；留空時只會輸出提示日誌，不會中斷流程。
+
+---
+
+## 3) 核心腳本與責任
+
+## `Assets/Scripts/Interaction/DoorController.cs`
+
+- 定義 `DoorNodeTag` 常數。
+- 管理門 HP、玩家修補、Sprite 與開關門音效狀態機。
+- 在門狀態切換時呼叫 `UpdateNodeTags(bool intact)`。
+- 提供 `FindNearestIntact(...)` 讓敵人綁定最近完整門。
+- 提供 DoorTag 診斷開關（Odin）與錯誤日誌。
+
+## `Assets/Scripts/AI/EnemyController.cs`
+
+- `FollowPath()` 內讀取 `_cachedGraphNode.Tag`。
+- 命中 `DoorNodeTag` 時嘗試綁定 `_doorGate`。
+- 在 `Tick()` 既有門攻擊段（`_doorGate != null`）維持原攻門行為。
+- 提供 DoorTag 讀取診斷（節流 + 一次性錯誤）。
+
+## `Assets/Scripts/Combat/Projectile.cs`
+
+- 忽略 `DoorSensor` Layer，避免子彈誤傷門或被門觸發器提前消耗。
+
+---
+
+## 4) Odin 診斷欄位（建議先開再關）
+
+## DoorController
+
+- `輸出 DoorTag 診斷日誌`
+- `狀態轉換時立即 Flush Graph`
+- `Tag 範圍 XY 擴張`
+- `Tag 範圍 Z 厚度補償`
+
+## EnemyController
+
+- `啟用 DoorTag 診斷`
+- `診斷輸出間隔（秒）`
+- `靠近門判定距離`
+- `缺失警告延遲（秒）`
+
+> 建議流程：除錯階段先開啟 -> 問題排除後關閉，避免大量 log 影響觀察與效能。
+
+---
+
+## 5) 驗收流程（最短版）
+
+1. 玩家進門區，門開始修補，直到完整。
+2. Console 應看到門端日誌：
+   - 「更新 A* Tag：設 Tag=1」
+   - 「Tag 寫入驗證成功」
+3. 敵人接近門時，Console 應看到敵人端日誌：
+   - `[DoorTag] ... 踩上 DoorNodeTag 節點，自設 _doorGate`
+4. 行為上敵人會停下攻門；門被打爆後敵人恢復通行。
+
+---
+
+## 6) 常見問題與定位
+
+## 門有修好，但敵人不停
+
+- 先看有無 `[DoorTag]` 日誌：
+  - 有：代表敵人已讀到 Tag，請檢查攻門段是否被其他狀態中斷。
+  - 無：多半是 Graph 範圍 / Tag 套用範圍 / node size 問題。
+- 看是否出現錯誤：
+  - `更新 Tag 後驗證失敗`
+  - `靠近完整門 ... 仍未讀到 DoorNodeTag`
+
+## 子彈打到門
+
+- 檢查門觸發區 Layer 是否確實是 `DoorSensor`。
+- 檢查 `Projectile` 是否為新版（有跳過 `DoorSensor`）。
+
+---
+
+## 7) 1000+ 敵人效能備註
+
+- 門查找採 O(n 門數)；門通常遠少於敵人（常見 < 20），可接受。
+- DoorTag 診斷採節流與一次性錯誤，避免 log 爆量。
+- Graph 更新只在門狀態切換時執行，不是每幀。
+- 敵人與投射物皆走物件池，維持低 GC。
+- 若壓測場景需要，建議關閉所有 DoorTag 診斷開關。
+
+---
+
+## 8) 新 AI 對話必讀（重要）
+
+- 本系統是 **A* Tag 驅動**，不是 Trigger 通知驅動。
+- 不要把敵人門邏輯改回 `OnTriggerEnter2D -> NotifyDoorBlocked()`。
+- 不要修改下列既有約束（除非明確需求）：
+  - `EnemyController` 內 `_doorGate != null` 攻門段邏輯
+  - `OnSpawnFromPool()` / `OnReturnToPool()` 對 `_doorGate` 重置
+  - `UnlockDoor.cs`（獨立系統）
+  - `EnemyTickManager.cs`（獨立 Tick 架構）
+- 任何防呆錯誤請用 `DebugLogger.LogError` 明確輸出，不做靜默 fallback。
+- 需要新增 Inspector 欄位時，必須：
+  - 使用 Odin（`TitleGroup`, `LabelText`, `Tooltip`）
+  - 提供清楚繁中說明
+  - 避免不必要插槽，降低人工誤設風險
+

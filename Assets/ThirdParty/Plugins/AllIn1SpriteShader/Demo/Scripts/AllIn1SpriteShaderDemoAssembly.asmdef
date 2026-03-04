@@ -1,0 +1,22 @@
+{
+    "name": "AllIn1SpriteShaderDemoAssembly",
+    "rootNamespace": "",
+    "references": [
+        "AllIn1SpriteShaderAssembly"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "",
+            "define": "ENABLE_INPUT_SYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

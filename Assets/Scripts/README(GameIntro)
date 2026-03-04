@@ -1,0 +1,441 @@
+# 小程式Demo：Game Intro 與功能設定說明（給開發者 / AI）
+
+> 本文件是 `Assets/Scripts` 目前核心系統的快速導覽。
+> 目標：讓你（或新的 AI 對話）在最短時間內理解「遊戲怎麼玩、怎麼設定、腳本彼此怎麼接」。
+
+---
+
+## 1) 遊戲是什麼？（核心玩法）
+
+這是一個 **2D Top-Down 生存射擊 Demo**，主軸流程如下：
+
+1. 進入 Menu，選擇 Stage 與開局武器。
+2. 進入場景後，玩家自動攻擊最近敵人，並在場上移動生存。
+3. 透過「搜索點」生成地面掉落物（PickupItem），玩家實際走過拾取後才獲得資源（錢、補血、電池、鑰匙、升級觸發）。
+4. 波次持續推進，難度會隨波次和 Stage 成長。
+5. 可選擇：
+   - **一般撤離**：進撤離區後觸發防守倒數。
+   - **緊急撤離**：電池達門檻可直接撤。
+6. 玩家死亡時有復活規則（電池 + 廣告 Stub）。
+
+---
+
+## 2) 玩家怎麼玩？（操作與目標）
+
+## 操作
+
+- **移動**
+  - 手機：`VirtualJoystick`。
+  - 編輯器測試：`KeyboardInput`（WASD / 方向鍵）。
+- **攻擊**
+  - 不用按鍵，`WeaponController` 會自動鎖定最近敵人並開火。
+- **互動**
+  - 走到互動區域通常是自動觸發（搜索、救援、補血、解鎖門、撤離區等）。
+
+## 當局目標
+
+- 優先活下來，持續搜索和升級武器。
+- 在波次壓力提升前，規劃補給與門的控制。
+- 選擇合適時機撤離（一般 / 緊急）。
+
+---
+
+## 3) 新建立功能如何使用與設定？（Setup Guide）
+
+以下是實際在 Unity 場景要做的事：
+
+## A. 必要管理器（GameScene）
+
+請在 GameScene 放好這些元件（通常掛在空物件）：
+
+- `GameSceneInit`
+- `SpawnManager`
+- `WaveManager`
+- `EvacuationManager`
+- `EnemyTickManager`
+- `GenericPool`
+- `UpgradeManager`
+- `SessionStats`（當局統計：擊殺數、倖存者數；場景本地，非 DontDestroyOnLoad）
+- `DebugLogger`（建議場景或常駐）
+
+Canvas UI 管理器（掛在 Canvas 下的空物件，保持 active）：
+
+- `RevivePanelManager`（掛 `RevivePanel` 腳本）
+- `ResultPanelManager`（掛 `ResultPanel` 腳本）
+
+> `GameSceneInit` 會負責把 Player、Stage、Config 注入給各管理器。
+
+## B. Player 組裝
+
+玩家物件建議至少包含：
+
+- `PlayerStats`
+- `PlayerMovement`
+- `PlayerAnimator`（新增：以 `Rigidbody2D.velocity` 驅動 Speed 動畫，並做左右朝向翻轉）
+- `PlayerDamageReceiver`
+- `WeaponController`
+- `ReviveController`
+- `FeedbackBridge`（建議必掛：Player 受擊 / 死亡 MMF 由此觸發）
+- `Rigidbody2D` + `Collider2D`
+
+另外：
+
+- 手機 UI 需要 `VirtualJoystick`，並把 `PlayerMovement` 參照拖上去。
+- 編輯器測試可掛 `KeyboardInput`。
+- 角色模型階層建議：`Player(Root) -> Model(子物件，有 Animator)`。
+- `PlayerAnimator` 會自動抓 `GetComponentInChildren<Animator>()`，不需手動拖拽插槽。
+
+## B-2. 動畫 / 朝向 / 槍口方向（新增）
+
+- `PlayerAnimator`
+  - 讀取 `rb.velocity`，將速度寫入 Animator float 參數 `Speed`。
+  - 玩家預設朝右：`Model.localEulerAngles.y = 0`。
+  - 當水平速度向左時翻轉為 `Model.localEulerAngles.y = 180`。
+  - 死亡時 Speed 強制歸零，停止朝向翻轉。
+- `EnemyAnimator`
+  - 讀取 `rb.velocity`，將速度寫入 Animator float 參數 `Speed`。
+  - 含根因診斷（找不到 Animator / Controller / Speed 參數）與防 log spam 機制（`LogOnce`）。
+- `WeaponController`
+  - `FirePoint` 每幀朝向當前目標（世界 `Z` 旋轉），讓槍口/發射點永遠對準射擊方向。
+  - 無目標時保持上一幀角度，不強制歸零。
+- Animator 參數命名要求：
+  - 參數名稱必須是 `Speed`（大小寫完全一致）。
+  - Transition 建議：`Idle -> Walk (Speed > 0.1)`、`Walk -> Idle (Speed < 0.1)`。
+
+## C. ScriptableObject 資料建立
+
+請在 Project 視窗建立這些資產（Create 選單）：
+
+- `GameConfig`
+- `WeaponData`（至少步槍、霰彈）
+- `EnemyData`（近戰、遠程，精英可另外建）
+- `StageData`
+- `RarityTable`
+- `SearchLootTable`
+- `UpgradeData`（多張）
+
+並把引用接好：
+
+- `GameLoopManager` 要有 `GameConfig`。
+- `MenuController` 要有可選武器 + `StageData`。
+- `SearchPoint` 要有 `RarityTable` + `SearchLootTable`。
+- `WaveManager / EvacuationManager` 需要能拿到 `GameConfig`、`StageData`。
+
+## D. 物件池設定（很重要）
+
+`GenericPool` 的 `PoolEntry` 需設定：
+
+- `id`
+- `prefab`
+- `prewarmCount`
+- `maxCount`
+
+至少要準備：
+
+- 玩家子彈
+- 敵人投射物
+- 各種敵人 prefab
+- 搜索掉落物 prefab（`pickup_coin`, `pickup_health`, `pickup_battery`, `pickup_key`, `pickup_upgrade`）
+- 特效（未來）
+
+> 若 `PoolId` 或 `ProjectilePoolId` 沒設定，系統會用 `DebugLogger.LogError` 直接報錯。
+>
+> **Pickup 系統注意事項（新版）**
+> - `SearchLootTable.LootEntry.pickupPoolId` 必須與 `GenericPool` 的 `PoolEntry.id` 完全一致（區分大小寫）。
+> - `PoolEntry.prefab` 必須指向 **Prefab 根物件**（有 `PickupItem` 的那一層），不能指到子物件 `Model`，否則會出現「找不到 PickupItem 元件」錯誤。
+> - Pickup 類型建議池容量（可依關卡調整）：
+>   - `pickup_coin`: prewarm 5~20, max 50~200
+>   - `pickup_health`: prewarm 5~10, max 20~80
+>   - `pickup_battery`: prewarm 5~10, max 20~80
+>   - `pickup_key`: prewarm 3~10, max 10~40
+>   - `pickup_upgrade`: prewarm 2~5, max 10~30
+
+## E. Physics Layer Collision Matrix（必做）
+
+請在 **Edit → Project Settings → Physics 2D → Layer Collision Matrix** 設定：
+
+- `Enemy ↔ Default`（牆壁 Layer）= **停用**
+  - 敵人採 `Rigidbody2D` Kinematic + A* 路徑 + RVO 局部避讓，不依賴物理牆碰撞。
+  - 停用後可顯著降低 1000+ 敵人時 Physics 2D 求解器負擔。
+- `Enemy ↔ Enemy` = **停用**
+  - 敵人彼此不走物理互推，改由 `RVOSimulator` 做群體避讓。
+
+> 程式碼不會覆蓋此設定。若設定錯誤，`EnemyTickManager` 會輸出明確警告/錯誤日誌。
+
+## F. A* + RVO 尋路/避讓設定（必做）
+
+場景中需要做以下設定，否則敵人會失去路徑或群體避讓能力，並輸出錯誤日誌：
+
+**步驟一：放置 AstarPath 物件**
+- GameScene 新增空物件，命名 `AstarPath`
+- Add Component → `Pathfinding > Pathfinder`
+- 在 Inspector → Graphs → `+` → 選 **Grid Graph**
+
+**步驟二：設定 Grid Graph**
+- `Width / Depth`：覆蓋整個地圖（建議地圖幾格就設幾，1 unit = 1 node）
+- `Node Size`：0.5（建議，不要小於 0.25 否則效能差）
+- `Collision Testing`：勾選 `Use 2D Physics`，Obstacle Layer Mask 選 **Default**（牆壁所在 Layer）
+- `Max Climb / Max Slope`：2D 遊戲不需要，維持預設即可
+- **`Erosion Iterations = 1`**（必要）：讓可行走節點收縮離牆至少 1 格（0.5 unit），路徑自然不貼牆，大幅降低 RVO 推力推入牆的機率
+
+**步驟三：設定 DoorSensor Layer（門阻擋新架構）**
+- `DoorController` **不再**使用實體阻擋碰撞器，A* 圖完全看不到門（路徑永遠穿過門區）
+- 改用 **DoorSensor Layer** 的觸發區偵測敵人，腳本邏輯決定是否阻擋（非物理碰撞）
+- 必做設定：
+  1. Edit → Project Settings → Tags and Layers → 新增 Layer `DoorSensor`
+  2. Edit → Project Settings → Physics 2D → Layer Collision Matrix → 啟用 **Enemy ↔ DoorSensor**
+  3. 將每個門的 `_triggerZone` 子物件的 Layer 設為 **DoorSensor**
+- 執行時 `DoorController.Start()` 會自動驗證並輸出詳細錯誤日誌（含修復步驟）
+
+**步驟四：加入 RVOSimulator（群體避讓核心）**
+- GameScene 新增空物件（可命名 `RVOSimulator`）
+- Add Component → `Pathfinding > Local Avoidance > RVOSimulator`
+- `Movement Plane` 必須設為 **XY**（2D 遊戲關鍵，預設 XZ 不可用）
+- **`Use Navmesh As Obstacle = true`**（必要）：啟用後，RVO Burst Job 會利用 Grid Graph 邊界感知，在計算層阻止 Agent 被推入牆壁。搭配程式碼中每幀呼叫的 `SetObstacleQuery`，是防穿牆的核心機制。有一定效能開銷，若 1000 隻敵人壓測後幀率不足，可嘗試關閉此選項（`constrainInsideGraph` 位置修正仍有效，只是失去 RVO 預測層保護）。
+
+**步驟四-A：RVOSimulator Flow Following Strength（排隊行為，建議調整）**
+- 在 `RVOSimulator` Inspector → `Flow Following Strength` → 設定值 **0.5 ～ 0.8**（預設 0）
+- **效果**：當大量 Agent 同目標（同一玩家）時，RVO 模擬器偵測到擁擠狀態，自動讓後排敵人繞流而非硬頂前排，搭配程式碼中的 Dynamic RVO Priority 形成自然的人群排隊效果。
+- 此設定僅為場景資產調整，**不需要修改程式碼**；若設為 0（預設），Dynamic Priority 仍有效，但排隊效果較弱。
+
+**步驟五：敵人 Prefab 設定 _losObstacleMask**
+- 每個 Enemy Prefab → Inspector → 視線偵測設定 → 障礙物 Layer Mask → 勾選 **Default**（牆壁所在 Layer）
+- 若未設定，執行時會輸出 `LogError`，遠程敵人將可穿牆射擊
+
+**步驟六：敵人 Prefab 必備元件**
+- `EnemyController`（核心）
+- `Seeker`（A* 路徑）
+- `RVOController`（RVO Agent）
+- `Rigidbody2D` + `Collider2D`
+- `EnemyController` 的 `[RequireComponent]` 已強制 `Seeker` / `RVOController` / `Rigidbody2D` / `Collider2D`
+
+> **重要效能說明**
+> - `EnemyController` 使用 `Seeker`（僅路徑計算），**不使用** `AIPath`（避免每隻敵人各自 Update）
+> - 路徑請求由 `_repathTimer` 控制（預設 0.75s），並由 `EnemyTickManager` 分幀錯開
+> - 局部避讓由 `RVOSimulator`（Burst Job）統一每幀計算，適合高密度群體（1000+）
+> - `EnemyController.ApplyRVOObstacleQuery()` 每幀由 `EnemyTickManager` 呼叫（整數賦值，1000 隻 < 5μs）
+> - `EnemyController.FollowPath()` 每 Tick 呼叫 `GetNearest(Walkable)` 更新快取節點 + constrainInsideGraph 位置修正
+> - `EnemyController` 對 RVO 輸出速度做指數平滑，避免 Tick 分幀造成的方向瞬間反轉抖動
+
+## G. 互動物件放置
+
+- 搜索點：`SearchPoint`（需 Trigger 區域）
+- 搜索掉落物 Prefab：`PickupItem` + `PickupFeedback` + `CircleCollider2D(isTrigger=true)` + `SpriteRenderer`
+- 門：`DoorController`（觸發感應區必須在 **DoorSensor Layer**；不再使用實體阻擋 Collider；A* 路徑永遠穿過門，敵人進入觸發區後由腳本通知停下攻擊）
+- 區域解鎖門：`UnlockDoor`
+- 倖存者點：`SurvivorRescuePoint`
+- 補血站：`HealStation`
+- 撤離區：`EvacZone`
+
+## H. Menu 場景
+
+Menu 場景請放：
+
+- `MenuController`
+- UI 按鈕綁定：
+  - `SelectWeapon(index)`
+  - `SetStageLevel(level)`
+  - `StartGame()`
+- 架構建議（重要）：
+  - `GameLoopManager`（`DontDestroyOnLoad`）請掛在「**獨立空物件**」，不要與 `MenuController` 共用同一個 GameObject。
+  - `MenuController` 應為 MenuScene 場景本地物件，每次回到選單由新場景實例接管。
+  - `MenuController._debugMenu` 可開啟一次性根因診斷（EventSystem / Canvas / Button / RaycastAll），定位「按鈕看得到但點不到」問題。
+
+---
+
+## 4) 核心腳本總覽（功能對照）
+
+## Core
+- `GameLoopManager`：全局狀態機（Menu/Playing/Evacuation/Reviving/Result）。`ReturnToMenu()` 會先 reset `Time.timeScale`、呼叫 `GenericPool.DespawnAllPools()`、**靜默將狀態設為 Menu（不在舊場景廣播事件）**，再載入選單場景。載入後由 `OnMenuLoaded()` 廣播 `OnGameStateChanged(Menu)`。
+- `GameEvents`：跨系統事件總線。包含 `ResultType` 枚舉（`GameOver` / `EvacSuccess` / `EmergencyEvac`）與 `OnGameResult` 事件。
+- `DebugLogger`：可開關類別日誌，錯誤強制輸出
+- `SpawnManager`：生怪（支援 `_spawnInterval` 逐隻陸續生成，Coroutine 驅動）
+- `WaveManager`：波次與血月
+- `EvacuationManager`：撤離流程
+- `GameSceneInit`：場景注入器
+- `AdService`：廣告 Stub
+- `MenuController`：選單邏輯。`Start()` 會呼叫 `GameLoopManager.OnMenuLoaded()`；含 `_debugMenu` 一次性診斷與點擊 Raycast 診斷；含舊實例清理（防止 `DontDestroyOnLoad` 殘留影響新場景）。
+- `SessionStats`：當局數據統計（擊殺數、倖存者數）。場景本地單例；每次場景重新載入自動歸零。
+
+## Player
+- `PlayerStats`：HP、資源、復活統一數值
+- `PlayerMovement`：移動控制
+- `PlayerAnimator`：以速度驅動動畫 + Model 左右翻轉（預設朝右，左移時 Y=180）
+- `PlayerDamageReceiver`：IDamageable 入口。受擊觸發 `FeedbackBridge.PlayHit()`；若此擊致死會再觸發 `PlayDeath()`
+- `ReviveController`：死亡後復活流程
+- `VirtualJoystick` / `KeyboardInput`：輸入來源
+
+## Combat
+- `WeaponController`：自動攻擊、最近敵人鎖定、`FirePoint` 持續朝向目標（Z 旋轉）
+- `Projectile`：飛行與命中回收
+- `IDamageable`：統一受傷介面
+
+## AI
+- `EnemyController`：近戰/遠程敵人行為。**現使用 A* Seeker + RVOController**：A* 決定全局繞路，RVO 負責局部避讓。Tick 由 `EnemyTickManager` 分幀驅動；移動速度採「RVO 輸出 + 指數平滑」抑制左右抖動。保留 `static PhysicsMaterial2D`（friction=0）避免邊角摩擦停滯。視線遮罩使用 `_losObstacleMask`（必要設定，預設 Default Layer）。**防穿牆（useNavmeshAsObstacle）**：`FollowPath()` 中每 Tick 呼叫 `GetNearest(Walkable)` 快取節點；`ApplyRVOObstacleQuery()` 每幀由 `EnemyTickManager` 呼叫以維持 RVO NavMesh 邊界感知；若位置已偏出可行走區域則直接位移回最近可行走點（constrainInsideGraph）。**排隊行為（Dynamic RVO Priority）**：`Tick()` 中以距玩家距離動態調整 `priorityMultiplier`（近 2.0 → 遠 0.4），後排敵人自動讓路不強推。**門阻擋（新架構）**：`CheckForBlockingDoor()` 已移除；改由 `DoorController` 觸發區主動呼叫 `NotifyDoorBlocked(door)` / `NotifyDoorPassable()` 通知，零 Physics 輪詢開銷。
+- `EnemyAnimator`：以速度驅動動畫（`Speed` 參數）。針對 1000+ 敵人設計：dirty-check 降低 SetFloat 次數、從 Pool 生成時重置快取、根因診斷採 `LogOnce` 防 spam。
+- `EnemyTickManager`：分幀更新（效能關鍵）。近距/遠距都走同一套 AI 流程，差異只在 Tick 頻率；RVO 仍由 `RVOSimulator` 每幀運算。啟動時會驗證 Physics Matrix、`AstarPath`、`RVOSimulator`，缺失會輸出可行修復步驟。
+
+## Interaction
+- `SearchPoint`：搜索讀條完成後不再直接加資源，而是生成掉落物（Pickup）
+- `PickupItem`：地面掉落物；保護期結束後可拾取，拾取時才套用資源/升級效果；超時自動回收
+- `DoorController`
+- `UnlockDoor`
+- `SurvivorRescuePoint`
+- `HealStation`
+- `EvacZone`
+
+## UI
+- `RevivePanel`：玩家死亡時彈出復活選擇面板。電池復活（首次）、廣告復活（後續）、放棄。倒數計時到期自動放棄。腳本掛在 Manager 空物件上（永遠 active），`_panelRoot` 指向實際 UI 根物件。
+- `ResultPanel`：遊戲結算面板。顯示結算類型標題（任務失敗 / 撤離成功 / 緊急撤離）、到達波次、擊殺數、金幣、倖存者數。讀取 `SessionStats` + `WaveManager` + `PlayerStats`。「返回主選單」按鈕呼叫 `GameLoopManager.ReturnToMenu()`。
+
+## Progression / Data / Pooling / Feedback
+- `UpgradeManager`
+- SO 系列：`GameConfig`, `WeaponData`, `EnemyData`, `StageData`, `RarityTable`, `SearchLootTable`, `UpgradeData`
+- `GenericPool` + `IPoolable`：`DespawnAllPools()` 方法可一次回收所有池的活躍物件，於 `ReturnToMenu` 時呼叫。
+- `FeedbackBridge`（戰鬥 / 搜索點 / 復活回饋）
+- `PickupFeedback`（掉落物生成 / 撿取回饋）
+
+---
+
+## 5) 已實作規則（請維持）
+
+- 腳本主要採用 `[SerializeField] private`。
+- 錯誤不做靜默 fallback，會明確打錯誤日誌。
+- Unity 2022.3 相容：`Rigidbody2D.velocity`（不是 `linearVelocity`）。
+- 自動攻擊目標優先最近敵人。
+- 搜索點次數：每點隨機 3~6 次。
+- 搜索點完成讀條後：
+  - 只負責抽獎 + 生成掉落物 + 發送 `FireTreasureFound`（HUD 告知掉落內容）
+  - **不直接**改動 `PlayerStats`
+- 玩家實際接觸 `PickupItem` 後才會：
+  - `Currency/Heal/Battery/Key`：呼叫 `PlayerStats` 對應方法
+  - `Upgrade`：呼叫 `GameEvents.FireUpgradeReady()`
+- 搜索讀條秒數：
+  - Common 2s
+  - Rare 3s
+  - Epic 4s
+  - Legendary 5s
+- 復活規則：
+  - 單局最多 3 次
+  - 第 1 次用電池
+  - 第 2~3 次需廣告（目前是 Stub）
+  - 復活後 HP 回滿（100%，非 50%）
+  - 死亡後 1 秒延遲才彈出復活面板
+  - 死亡後玩家停止受傷，直到復活或 Game Over
+- 門 MMF 語意規則（DoorController）：
+  - `OnDoorRepairTick`：每次修補 Tick 都觸發（連續修補回饋）。
+  - `OnDoorPatched`：只在門 HP `0 -> >0` 瞬間觸發一次（門復活事件）。
+  - `OnDoorOpen` / `OnDoorClose`：只代表視覺開關狀態轉換，不等同修補完成事件。
+- 場景清理規則（返回選單時）：
+  - `GameLoopManager.ReturnToMenu()` 固定執行：`Time.timeScale = 1f` → `GenericPool.DespawnAllPools()` → `_currentState = Menu（靜默，不在舊場景發事件）` → `SceneManager.LoadScene(menu)`
+  - MenuScene 載入後由 `MenuController.Start()` 呼叫 `GameLoopManager.OnMenuLoaded()`，再廣播 `OnGameStateChanged(Menu)`（只給新場景訂閱者）。
+  - `GenericPool`（`DontDestroyOnLoad`）的所有活躍物件（敵人、子彈、掉落物、特效）在切換場景前全部回收
+  - 場景本地管理器（`WaveManager`、`SpawnManager`、`EnemyTickManager` 等）由 Unity 在場景卸載時自動銷毀，無需手動清理
+
+---
+
+## 6) 目前未完成 / 後續擴充（給 AI 很重要）
+
+1. **Input System 套件尚未正式整合**
+   - 現階段是 UI Joystick + KeyboardInput。
+2. **MMF 已接入核心戰鬥/搜索/掉落回饋，但資產規格仍待統一**
+   - 已接：Player/Enemy 受擊、Player/Enemy 死亡、武器開火、搜索流程（開始/停止/完成）。
+   - 已接（新增）：掉落物生成（OnSpawn）、掉落物撿取（OnCollected）。
+   - 未完成：不同敵人類型、武器、掉落物的 MMF 視覺/音效規格化（命名、強度、時長、混音）。
+3. **局外系統未開工**
+   - 碎片、商店、遺物、背包等。
+4. **壓測流程未建立**
+   - 200/500/1000 敵人壓測場景尚待製作。
+5. **門阻擋架構已升級至 DoorSensor 觸發區通知系統（2026-03 更新）**
+   - `DoorController` 不再使用實體碰撞器，A* 圖完全看不到門，路徑永遠穿過門區。
+   - 敵人進入 DoorSensor 觸發區後由 `NotifyDoorBlocked()` 阻擋；門破壞或玩家進入後由 `NotifyDoorPassable()` 釋放。
+   - 不再需要 `UpdateAstarGraph()`，也不再有「玩家被門卡住」的問題。
+
+---
+
+## 7) 新對話 AI 開工前必看（交接重點）
+
+若你是新的 AI，請先做這些事情再改程式：
+
+1. 先讀本檔 `Assets/Scripts/README(GameIntro)`。
+2. 確認 `Assets/Scripts` 現有架構，不要重建同名系統。
+3. 修改時延續既有命名空間：`SurvivalDemo.*`。
+4. 優先修根因，不要用下游補丁掩蓋問題。
+5. 若改物理移動，請維持 Unity 2022.3 API。
+6. 若加新系統，優先接 `GameEvents` 與 `DebugLogger`。
+7. 若要做高密度敵人優化，優先在 `EnemyTickManager` / `GenericPool` 擴充。
+   - `GenericPool.DespawnAllPools()` 可一次回收所有池的活躍物件，**必須在 `ReturnToMenu` 中呼叫**，否則敵人/子彈會在選單場景中殘留（`GenericPool` 是 `DontDestroyOnLoad`，其子物件不隨場景卸載）。
+8. **搜索掉落（Pickup）架構關鍵設計（新版）**：
+   - `SearchPoint.CompleteSearch()` 只抽結果，交由 `SpawnPickup()` 生成地面掉落物。
+   - `SearchLootTable.LootEntry` 必須配置 `pickupPoolId`，且對應 `GenericPool` 的 `id`。
+   - `PickupItem.Init(type, amount, poolId)` 在 `Spawn()` 後立即呼叫：
+     - 啟動保護期（Collider 關閉）
+     - 啟動生命期倒數（超時回收）
+     - 播放 `PickupFeedback.PlaySpawn()`
+   - 玩家接觸 `PickupItem` 時才執行 `ApplyEffect()`：
+     - 資源類型更新 `PlayerStats`
+     - Upgrade 觸發 `GameEvents.FireUpgradeReady()`
+     - 播放 `PickupFeedback.PlayCollected()` 後回收
+   - `PickupItem` 與 `GenericPool` 皆採無 Coroutine/低 GC 路徑，適合大量同時活躍物件。
+9. **敵人 AI 架構（A* + RVO）關鍵設計**：
+   - 敵人 Prefab 走 `Seeker + RVOController` 組合，不掛 `AIPath`。
+   - `EnemyController` 需掛 `RVOController`（由 `[RequireComponent]` 保證）。
+   - `Tick(float deltaTime)` 由 `EnemyTickManager` 呼叫，不再使用 `applySeparation`。
+   - `_repathTimer` 到期才呼叫 `Seeker.StartPath()`，回調 `OnPathFound()` 更新 `_waypoints`。
+   - `FollowPath()` 先設定 `RVOController.SetTarget()`，再讀取 `RVOController.velocity` 作為實際避讓速度。
+   - 最終移動速度使用指數平滑（`1 - exp(-k*dt)`）降低 Tick 分幀造成的瞬間方向跳變。
+   - 場景必須有 `RVOSimulator` 且 `Movement Plane = XY`，否則局部避讓失效。
+10. **動畫系統（新增）關鍵設計**：
+   - 角色階層固定：`Player/Enemy(Root) -> Model(子物件，有 Animator)`。
+   - 動畫切換參數一律用 `Speed`（float，大小寫固定）。
+   - `PlayerAnimator` 負責兩件事：Speed 寫入 + 左右翻轉（左移時 Model 的 Y=180）。
+   - `EnemyAnimator` 只負責 Speed 寫入，不做朝向翻轉（避免與 AI 邏輯耦合）。
+   - `WeaponController` 在 `Update()` 內持續旋轉 `FirePoint`，對準當前目標方向（Z 軸）。
+11. **新 AI 若動畫異常，先查根因日誌再改程式**：
+   - 常見根因依序：`Animator` 缺失 → `Controller` 未指定 → `Speed` 參數不存在/拼字錯誤。
+   - 請先看 `PlayerAnimator` / `EnemyAnimator` 的錯誤日誌與 toggle 診斷，不要直接重寫動畫邏輯。
+12. **回選單卡死（Start 無法再點）根因與現行防護（2026-03 更新）**：
+   - 典型根因：`MenuController` 與 `GameLoopManager` 共用同一個 `DontDestroyOnLoad` 物件，導致重進 Menu 時新實例被誤銷毀或舊實例殘留。
+   - 防護 A（狀態事件時機）：`ReturnToMenu()` 不再在舊場景 `ChangeState(Menu)`；改為靜默設狀態，待新 MenuScene 載入後用 `OnMenuLoaded()` 廣播。
+   - 防護 B（實例管理）：`GameLoopManager` 重複實例只銷毀元件（不銷毀整個 GO）；`MenuController` 會清理舊殘留實例並由新場景實例接管。
+   - 快速診斷：開啟 `MenuController._debugMenu`，看一次性報告的 `MenuController 實例數 / EventSystem 數量 / RaycastAll 最頂層物件`。
+
+---
+
+## 8) 快速檢查清單（第一次進場失敗時）
+
+- [ ] Project Settings → Physics 2D → Layer Collision Matrix：Enemy ↔ Default = 停用；Enemy ↔ Enemy = 停用。
+- [ ] `GameLoopManager` 有掛 `GameConfig`。
+- [ ] `MenuController` 有武器清單 + StageData。
+- [ ] `GameLoopManager` 與 `MenuController` **不要掛在同一個 GameObject**（避免 `DontDestroyOnLoad` 生命週期互相污染）。
+- [ ] MenuScene 只保留一個 `MenuController` 實例（若 `_debugMenu` 顯示 >1，先修正場景與 prefab 組裝）。
+- [ ] 若「按鈕看得到但點了沒反應」，先開 `MenuController._debugMenu`，確認 `RaycastAll` 最頂層是否為預期按鈕。
+- [ ] `GameSceneInit` 的 Player 與管理器參照都沒漏。
+- [ ] `GenericPool` 已建好敵人/子彈 PoolEntry。
+- [ ] `GenericPool` 已建好 5 個 Pickup PoolEntry：`pickup_coin`, `pickup_health`, `pickup_battery`, `pickup_key`, `pickup_upgrade`。
+- [ ] 每個 Pickup PoolEntry 的 `prefab` 都指向 Prefab 根物件（不是子物件 `Model`）。
+- [ ] 敵人 prefab 上有 `EnemyController` + `Seeker` + `RVOController` + `Collider2D` + `Rigidbody2D`。
+- [ ] 敵人 prefab 上有 `EnemyAnimator`；且 `Model` 子物件有 `Animator` 與正確 Controller。
+- [ ] GameScene 有 `AstarPath` 物件並已設定 Grid Graph（覆蓋地圖、障礙 Layer = Default、**Erosion Iterations = 1**）。
+- [ ] GameScene 有 `RVOSimulator`，且 `Movement Plane = XY`、**`Use Navmesh As Obstacle = true`**（防穿牆核心）；建議 `Flow Following Strength = 0.5 ~ 0.8`（調高後排隊效果更自然）。
+- [ ] 每個 `DoorController` 的 `_triggerZone` 子物件 Layer = **DoorSensor**（不再需要 _blockingCollider）。
+- [ ] Physics 2D → Layer Collision Matrix：**Enemy ↔ DoorSensor = 啟用**（讓敵人觸發門感應區）。
+- [ ] 每個 `DoorController` 已綁定需要的 Door MMF 插槽（至少確認 `OnDoorRepairTick`、`OnDoorPatched`、`OnDoorOpen`）。
+- [ ] 驗收 Door 修補事件：從 0 HP 修到 >0 時 `OnDoorPatched` 只播 1 次；持續補到滿血不重播；被打回 0 後再次 0->>0 會再播 1 次。
+- [ ] 玩家 prefab 上有 `PlayerStats` + `WeaponController` + `PlayerAnimator` + `PlayerDamageReceiver` + `FeedbackBridge` + `ReviveController`。
+- [ ] Player / Enemy 的 Animator Controller 皆存在 float 參數 `Speed`（大小寫一致）。
+- [ ] `WeaponController` 的 `_firePoint` 已指定（若希望槍口旋轉可視化）。
+- [ ] `SearchPoint` 的 `RarityTable` / `SearchLootTable` 不為空。
+- [ ] `SearchLootTable` 每個 `LootEntry` 都有正確 `pickupPoolId`，且和 `GenericPool.id` 完全一致。
+- [ ] 每個 Pickup Prefab 都有 `PickupItem` + `PickupFeedback` + `CircleCollider2D(isTrigger)`。
+- [ ] 場景中有可用生怪點（SpawnManager `_spawnPoints`）。
+- [ ] GameScene 有 `SessionStats` 組件（掛在 Managers 空物件，非 DontDestroyOnLoad）。
+- [ ] Canvas 下有 `RevivePanelManager` 空物件（掛 `RevivePanel` 腳本，保持 active）；其 `_panelRoot` 指向實際 UI 根物件（初始 SetActive false）、`_reviveController` 指向玩家。
+- [ ] Canvas 下有 `ResultPanelManager` 空物件（掛 `ResultPanel` 腳本，保持 active）；其 `_panelRoot` 指向實際 UI 根物件（初始 SetActive false）、`_playerStats` 指向玩家、`_returnButton` 已設定。
+
+---
+
+## 9) 備註
+
+- 這份文件是「開發導覽」，不是玩家對外說明書。
+- 若腳本名、欄位名有調整，請同步更新本文件，避免後續 AI 誤判。
